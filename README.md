@@ -15,7 +15,7 @@ Same pattern as [euroasia_inspection_be_jenkins_uat](https://github.com/ankittya
 
 ## What the pipeline does
 
-1. Checks out `euroasia_clientportal_BE` branch `dev`
+1. Checks out `euroasia_clientportal_BE` branch `main`
 2. Lint + unit tests (`scripts/ci-lint-test.sh`)
 3. Builds `ghcr.io/euroasiasci/client-portal-be:${BUILD_NUMBER}` and `:dev`
 4. Pushes to GHCR
