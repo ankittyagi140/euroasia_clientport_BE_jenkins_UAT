@@ -118,7 +118,18 @@ pipeline {
 
                 docker exec \
                     "${CI_CONTAINER}" \
-                    bash /workspace/scripts/ci-lint-test.sh
+                    bash -lc '
+set -euo pipefail
+cd /workspace
+if [ -f scripts/ci-lint-test.sh ]; then
+  bash scripts/ci-lint-test.sh
+else
+  export UV_LINK_MODE=copy
+  uv sync --frozen --all-packages --group dev
+  uv run ruff check apps packages tests
+  uv run pytest -q --cov=apps --cov=packages --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+fi
+'
 
                 docker cp \
                     "${CI_CONTAINER}:/workspace/coverage.xml" \
