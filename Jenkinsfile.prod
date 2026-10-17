@@ -1,0 +1,328 @@
+/**
+ * Client Portal BE — production CI
+ *
+ * Jenkins job  : Clientportal_BE / PROD  (or similar)
+ * Script Path  : Jenkinsfile.prod
+ *
+ * Checks out application branch `release`, tags the image :prod,
+ * then triggers the platform PRODUCTION job.
+ *
+ * App repo     : https://github.com/ankittyagi140/euroasia_clientportal_BE.git
+ * Image        : ghcr.io/euroasiasci/client-portal-be
+ * Credentials  : github-pat, ghcr-token
+ */
+
+pipeline {
+
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        skipDefaultCheckout(true)
+    }
+
+    environment {
+
+        APP_NAME = "client-portal-be"
+
+        REPO_URL = "https://github.com/ankittyagi140/euroasia_clientportal_BE.git"
+
+        GIT_BRANCH = "release"
+
+        DOCKER_BUILDKIT = "1"
+
+        DOCKERFILE = "Dockerfile"
+
+        REGISTRY = "ghcr.io/euroasiasci"
+
+        IMAGE = "${REGISTRY}/${APP_NAME}"
+
+        IMAGE_TAG = "${BUILD_NUMBER}"
+
+        ENVIRONMENT = "prod"
+
+        PLATFORM_JOB = "EUROASIA_SCI_CLIENT_PORTAL/Euroasia_Inspection/Euroasia_inspection_Infra/Euroasia_inspection_Infra_PRODUCTION"
+
+    }
+
+    stages {
+
+        stage('Checkout') {
+
+            steps {
+
+                git(
+
+                    branch: GIT_BRANCH,
+
+                    credentialsId: "github-pat",
+
+                    url: REPO_URL
+
+                )
+
+                script {
+
+                    env.GIT_SHA = sh(
+
+                        script: "git rev-parse --short HEAD",
+
+                        returnStdout: true
+
+                    ).trim()
+
+                }
+
+            }
+
+        }
+
+        stage('Lint & Unit Test') {
+
+            steps {
+
+                sh '''
+
+                set -eux
+
+                CI_CONTAINER="client-portal-be-ci-prod-${BUILD_NUMBER}"
+
+                docker rm -f "${CI_CONTAINER}" >/dev/null 2>&1 || true
+
+                cleanup() { docker rm -f "${CI_CONTAINER}" >/dev/null 2>&1 || true; }
+                trap cleanup EXIT
+
+                docker run \
+                    -d \
+                    --name "${CI_CONTAINER}" \
+                    -w /workspace \
+                    ghcr.io/astral-sh/uv:python3.13-bookworm-slim \
+                    sleep infinity
+
+                docker cp "$PWD/." "${CI_CONTAINER}:/workspace"
+
+                docker exec \
+                    "${CI_CONTAINER}" \
+                    bash -lc '
+set -euo pipefail
+cd /workspace
+if [ -f scripts/ci-lint-test.sh ]; then
+  bash scripts/ci-lint-test.sh
+else
+  export UV_LINK_MODE=copy
+  uv sync --frozen --all-packages --group dev
+  uv run ruff check apps packages tests
+  uv run pytest -q --cov=apps --cov=packages --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+fi
+'
+
+                docker cp \
+                    "${CI_CONTAINER}:/workspace/coverage.xml" \
+                    coverage.xml || true
+
+                docker cp \
+                    "${CI_CONTAINER}:/workspace/htmlcov" \
+                    htmlcov || true
+
+                '''
+
+            }
+
+        }
+
+        stage('Build Docker Image') {
+
+            steps {
+
+                sh '''
+
+                set -eux
+
+                docker build \
+                    --pull \
+                    --build-arg BUILDKIT_INLINE_CACHE=1 \
+                    --label org.opencontainers.image.version=${BUILD_NUMBER} \
+                    --label org.opencontainers.image.revision=${GIT_SHA} \
+                    --label org.opencontainers.image.source=${REPO_URL} \
+                    --label org.opencontainers.image.title=client-portal-be \
+                    --label org.opencontainers.image.environment=production \
+                    -f ${DOCKERFILE} \
+                    -t ${IMAGE}:${IMAGE_TAG} \
+                    -t ${IMAGE}:${ENVIRONMENT} \
+                    .
+
+                '''
+
+            }
+
+        }
+
+        stage('Login GHCR') {
+
+            steps {
+
+                withCredentials([
+
+                    usernamePassword(
+
+                        credentialsId: 'ghcr-token',
+
+                        usernameVariable: 'GHCR_USER',
+
+                        passwordVariable: 'GHCR_TOKEN'
+
+                    )
+
+                ]) {
+
+                    sh '''
+
+                    echo "${GHCR_TOKEN}" | docker login ghcr.io \
+                        --username "${GHCR_USER}" \
+                        --password-stdin
+
+                    '''
+
+                }
+
+            }
+
+        }
+
+        stage('Push Docker Image') {
+
+            steps {
+
+                sh '''
+
+                set -eux
+
+                docker push ${IMAGE}:${IMAGE_TAG}
+
+                docker push ${IMAGE}:${ENVIRONMENT}
+
+                '''
+
+            }
+
+        }
+
+        stage('Trigger Platform Production Deployment') {
+
+            steps {
+
+                script {
+
+                    echo "========================================="
+
+                    echo "Triggering Platform Production Deployment..."
+
+                    echo "Application : ${APP_NAME}"
+
+                    echo "Environment : ${ENVIRONMENT}"
+
+                    echo "Image Tag : ${IMAGE_TAG}"
+
+                    echo "========================================="
+
+                    build(
+
+                        job: PLATFORM_JOB,
+
+                        wait: true,
+
+                        propagate: true,
+
+                        parameters: [
+
+                            string(
+
+                                name: 'APPLICATION',
+
+                                value: APP_NAME
+
+                            ),
+
+                            string(
+
+                                name: 'IMAGE_TAG',
+
+                                value: IMAGE_TAG
+
+                            )
+
+                        ]
+
+                    )
+
+                }
+
+            }
+
+        }
+
+    }
+
+    post {
+
+        success {
+
+            archiveArtifacts(
+
+                artifacts: 'coverage.xml,htmlcov/**',
+
+                allowEmptyArchive: true
+
+            )
+
+            echo '''
+
+=========================================
+
+Client Portal BE CI Successful (PRODUCTION)
+
+Docker image published (:prod)
+
+Platform production deployment completed
+
+=========================================
+
+'''
+
+        }
+
+        failure {
+
+            echo '''
+
+=========================================
+
+Client Portal BE CI Failed (PRODUCTION)
+
+Check Platform Deployment logs if the
+failure occurred after the image push.
+
+=========================================
+
+'''
+
+        }
+
+        always {
+
+            sh '''
+
+            docker logout ghcr.io || true
+
+            '''
+
+            cleanWs()
+
+        }
+
+    }
+
+}

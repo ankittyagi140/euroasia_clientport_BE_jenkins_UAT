@@ -34,7 +34,7 @@ pipeline {
 
         REPO_URL = "https://github.com/ankittyagi140/euroasia_clientportal_BE.git"
 
-        GIT_BRANCH = "main"
+        GIT_BRANCH = "dev"
 
         // ==========================================================
         // Docker
